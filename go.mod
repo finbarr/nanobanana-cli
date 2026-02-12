@@ -1,4 +1,4 @@
-module github.com/finbarr/nano-banana-cli
+module github.com/finbarr/nanobanana-cli
 
 go 1.25.6
 
