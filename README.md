@@ -92,7 +92,7 @@ Flags go after the subcommand: `nanobanana generate --flag "prompt"`.
 | `--json` | | | Output result as JSON to stdout |
 | `--preview` | `-p` | | Open image after saving |
 
-> **Note on `--aspect` and `--size`:** These are convenience shortcuts that append aspect ratio and resolution hints to your prompt. The Gemini API has no native parameters for image dimensions — the model may not always produce the exact size requested. You can also specify any aspect ratio or size directly in your prompt text (e.g., `"a 4K panoramic sunset in 21:9"`).
+**Note on `--aspect` and `--size`:** These are convenience shortcuts that append aspect ratio and resolution hints to your prompt. The Gemini API has no native parameters for image dimensions — the model may not always produce the exact size requested. You can also specify any aspect ratio or size directly in your prompt text (e.g., `"a 4K panoramic sunset in 21:9"`).
 
 ## Models
 
