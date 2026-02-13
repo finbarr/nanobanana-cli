@@ -2,7 +2,7 @@
 
 **Generate and edit images with Gemini from the command line.**
 
-A fast, single-binary CLI for Google's Gemini image generation models. Text-to-image, image editing, multiple aspect ratios and sizes.
+A fast, single-binary CLI for Google's Gemini image generation models. Text-to-image and image editing.
 
 ## Quick Start
 
@@ -50,8 +50,11 @@ nanobanana generate "a cat in space"
 # Widescreen with custom output path
 nanobanana generate "sunset over mountains" --aspect 16:9 --output sunset.png
 
-# High quality with the pro model
-nanobanana generate "4K wallpaper of a forest" --model pro --size 4K
+# Use the pro model
+nanobanana generate "a photorealistic forest" --model pro
+
+# Aspect and size can also just go in the prompt
+nanobanana generate "a 4K panoramic sunset in 21:9 aspect ratio"
 
 # Edit an existing image
 nanobanana edit photo.jpg "make it look like a watercolor painting"
@@ -69,16 +72,18 @@ Flags go after the subcommand: `nanobanana generate --flag "prompt"`.
 |------|-------|---------|-------------|
 | `--model` | `-m` | `flash` | Model: `flash`, `pro`, or a full model name |
 | `--output` | `-o` | auto | Output file path |
-| `--aspect` | `-a` | `1:1` | Aspect ratio: `1:1`, `16:9`, `9:16`, `4:3`, `3:4` |
-| `--size` | `-s` | `1K` | Image size: `1K`, `2K`, `4K` (4K requires `pro`) |
+| `--aspect` | `-a` | `1:1` | Aspect ratio hint: `1:1`, `16:9`, `9:16`, `4:3`, `3:4` |
+| `--size` | `-s` | `1K` | Size hint: `1K`, `2K`, `4K` |
 | `--quiet` | `-q` | | Suppress output, print only file path to stdout |
+
+> **Note on `--aspect` and `--size`:** These are convenience shortcuts that append aspect ratio and resolution hints to your prompt. The Gemini API has no native parameters for image dimensions — the model may not always produce the exact size requested. You can also specify any aspect ratio or size directly in your prompt text (e.g., `"a 4K panoramic sunset in 21:9"`).
 
 ## Models
 
 | Alias | Model ID | Notes |
 |-------|----------|-------|
 | `flash` | `gemini-2.5-flash-image` | Fast, affordable (~$0.04/img). Default. |
-| `pro` | `gemini-3-pro-image-preview` | Higher quality, supports 4K (~$0.13/img). |
+| `pro` | `gemini-3-pro-image-preview` | Higher quality (~$0.13/img). |
 
 You can also pass any full Gemini model name directly (e.g., `--model gemini-2.5-flash-image`).
 
