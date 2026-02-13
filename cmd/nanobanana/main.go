@@ -346,9 +346,18 @@ func isBase64Image(s string) bool {
 // --- Image I/O ---
 
 func readImage(path string) ([]byte, string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, "", fmt.Errorf("reading image: %w", err)
+	var data []byte
+	var err error
+	if path == "-" {
+		data, err = io.ReadAll(os.Stdin)
+		if err != nil {
+			return nil, "", fmt.Errorf("reading stdin: %w", err)
+		}
+	} else {
+		data, err = os.ReadFile(path)
+		if err != nil {
+			return nil, "", fmt.Errorf("reading image: %w", err)
+		}
 	}
 
 	mimeType := detectMIMEType(path, data)
@@ -356,18 +365,20 @@ func readImage(path string) ([]byte, string, error) {
 }
 
 func detectMIMEType(path string, data []byte) string {
-	ext := strings.ToLower(filepath.Ext(path))
-	switch ext {
-	case ".png":
-		return "image/png"
-	case ".jpg", ".jpeg":
-		return "image/jpeg"
-	case ".gif":
-		return "image/gif"
-	case ".webp":
-		return "image/webp"
+	if path != "-" {
+		ext := strings.ToLower(filepath.Ext(path))
+		switch ext {
+		case ".png":
+			return "image/png"
+		case ".jpg", ".jpeg":
+			return "image/jpeg"
+		case ".gif":
+			return "image/gif"
+		case ".webp":
+			return "image/webp"
+		}
 	}
-	// Fallback to content detection
+	// Fallback to content detection (always used for stdin)
 	ct := http.DetectContentType(data)
 	if strings.HasPrefix(ct, "image/") {
 		return ct
@@ -697,35 +708,48 @@ func runGenerate(args []string) int {
 			return 1
 		}
 
-		// Determine output path
-		outPath := outputFlag
-		if outPath == "" {
-			outPath = autoName("nanobanana", mimeType)
-		}
-
-		if err := writeImage(outPath, imgData, mimeType); err != nil {
-			errorf("writing image: %v", err)
-			return 1
-		}
-
-		results = append(results, jsonResult{
-			File:   outPath,
-			Model:  modelName,
-			Prompt: prompt,
-			Bytes:  len(imgData),
-		})
-
-		if !jsonFlag {
-			if quietFlag {
-				fmt.Println(outPath)
-			} else {
-				success("Saved to %s (%d bytes)", outPath, len(imgData))
+		// Write output
+		if outputFlag == "-" {
+			if _, err := os.Stdout.Write(imgData); err != nil {
+				errorf("writing to stdout: %v", err)
+				return 1
 			}
-		}
+			results = append(results, jsonResult{
+				File:   "-",
+				Model:  modelName,
+				Prompt: prompt,
+				Bytes:  len(imgData),
+			})
+		} else {
+			outPath := outputFlag
+			if outPath == "" {
+				outPath = autoName("nanobanana", mimeType)
+			}
 
-		if previewFlag {
-			if err := openFile(outPath); err != nil {
-				warn("could not open preview: %v", err)
+			if err := writeImage(outPath, imgData, mimeType); err != nil {
+				errorf("writing image: %v", err)
+				return 1
+			}
+
+			results = append(results, jsonResult{
+				File:   outPath,
+				Model:  modelName,
+				Prompt: prompt,
+				Bytes:  len(imgData),
+			})
+
+			if !jsonFlag {
+				if quietFlag {
+					fmt.Println(outPath)
+				} else {
+					success("Saved to %s (%d bytes)", outPath, len(imgData))
+				}
+			}
+
+			if previewFlag {
+				if err := openFile(outPath); err != nil {
+					warn("could not open preview: %v", err)
+				}
 			}
 		}
 	}
@@ -823,7 +847,11 @@ func runEdit(args []string) int {
 		return 1
 	}
 
-	info("Editing %s with %s (%s)", imagePath, modelFlag, prompt)
+	inputLabel := imagePath
+	if imagePath == "-" {
+		inputLabel = "stdin"
+	}
+	info("Editing %s with %s (%s)", inputLabel, modelFlag, prompt)
 	stop := startSpinner("Editing image...")
 
 	resultData, resultMIME, err := editImage(apiKey, modelName, prompt, imgData, mimeType, aspectFlag, sizeFlag)
@@ -833,35 +861,54 @@ func runEdit(args []string) int {
 		return 1
 	}
 
-	// Determine output path
-	outPath := outputFlag
-	if outPath == "" {
-		ext := filepath.Ext(imagePath)
-		base := strings.TrimSuffix(filepath.Base(imagePath), ext)
-		outPath = base + "_edited" + ext
-	}
-
-	if err := writeImage(outPath, resultData, resultMIME); err != nil {
-		errorf("writing image: %v", err)
-		return 1
-	}
-
-	if jsonFlag {
-		json.NewEncoder(os.Stdout).Encode(jsonResult{
-			File:   outPath,
-			Model:  modelName,
-			Prompt: prompt,
-			Bytes:  len(resultData),
-		})
-	} else if quietFlag {
-		fmt.Println(outPath)
+	// Write output
+	if outputFlag == "-" {
+		if _, err := os.Stdout.Write(resultData); err != nil {
+			errorf("writing to stdout: %v", err)
+			return 1
+		}
+		if jsonFlag {
+			json.NewEncoder(os.Stderr).Encode(jsonResult{
+				File:   "-",
+				Model:  modelName,
+				Prompt: prompt,
+				Bytes:  len(resultData),
+			})
+		}
 	} else {
-		success("Saved to %s (%d bytes)", outPath, len(resultData))
-	}
+		outPath := outputFlag
+		if outPath == "" {
+			if imagePath == "-" {
+				outPath = autoName("edited", resultMIME)
+			} else {
+				ext := filepath.Ext(imagePath)
+				base := strings.TrimSuffix(filepath.Base(imagePath), ext)
+				outPath = base + "_edited" + ext
+			}
+		}
 
-	if previewFlag {
-		if err := openFile(outPath); err != nil {
-			warn("could not open preview: %v", err)
+		if err := writeImage(outPath, resultData, resultMIME); err != nil {
+			errorf("writing image: %v", err)
+			return 1
+		}
+
+		if jsonFlag {
+			json.NewEncoder(os.Stdout).Encode(jsonResult{
+				File:   outPath,
+				Model:  modelName,
+				Prompt: prompt,
+				Bytes:  len(resultData),
+			})
+		} else if quietFlag {
+			fmt.Println(outPath)
+		} else {
+			success("Saved to %s (%d bytes)", outPath, len(resultData))
+		}
+
+		if previewFlag {
+			if err := openFile(outPath); err != nil {
+				warn("could not open preview: %v", err)
+			}
 		}
 	}
 
@@ -963,7 +1010,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  %sVersion:%s %s\n\n", colorBold, colorReset, Version)
 	fmt.Fprintf(os.Stderr, "%sUSAGE:%s\n", colorBold, colorReset)
 	fmt.Fprintln(os.Stderr, "  nanobanana generate \"prompt\"      Generate an image from text (alias: gen)")
-	fmt.Fprintln(os.Stderr, "  nanobanana edit <image> \"prompt\"   Edit an existing image")
+	fmt.Fprintln(os.Stderr, "  nanobanana edit <image> \"prompt\"   Edit an existing image (use - for stdin)")
 	fmt.Fprintln(os.Stderr, "  nanobanana setup                  Configure API key")
 	fmt.Fprintln(os.Stderr, "  nanobanana config                 Show current configuration")
 	fmt.Fprintln(os.Stderr, "  nanobanana version                Show version info")
@@ -971,7 +1018,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintf(os.Stderr, "%sFLAGS:%s\n", colorBold, colorReset)
 	fmt.Fprintln(os.Stderr, "  -m, --model <name>    Model: flash, pro, or a full model name")
-	fmt.Fprintln(os.Stderr, "  -o, --output <path>   Output file path (default: auto-generated)")
+	fmt.Fprintln(os.Stderr, "  -o, --output <path>   Output file path (default: auto-generated, - for stdout)")
 	fmt.Fprintln(os.Stderr, "  -a, --aspect <ratio>  Aspect ratio hint: 1:1, 16:9, 9:16, 4:3, 3:4 (default: 1:1)")
 	fmt.Fprintln(os.Stderr, "  -s, --size <size>     Size hint: 1K, 2K, 4K (default: 1K)")
 	fmt.Fprintln(os.Stderr, "  -n, --count <N>       Generate N image variations (1-8, generate only)")
@@ -995,7 +1042,8 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  nanobanana generate \"4K wallpaper\" --model pro --size 4K")
 	fmt.Fprintln(os.Stderr, "  nanobanana generate \"logo ideas\" --count 4    # 4 variations")
 	fmt.Fprintln(os.Stderr, "  nanobanana generate \"icon\" --json              # JSON for scripts")
-	fmt.Fprintln(os.Stderr, "  nanobanana edit photo.jpg \"make it cartoon\" --preview")
+	fmt.Fprintln(os.Stderr, "  nanobanana edit --preview photo.jpg \"make it cartoon\"")
 	fmt.Fprintln(os.Stderr, "  nanobanana edit photo.jpg \"watercolor style\" -o result.png")
+	fmt.Fprintln(os.Stderr, "  cat photo.jpg | nanobanana edit - \"fix it\" -o -  # stdin/stdout")
 	fmt.Fprintln(os.Stderr, "")
 }

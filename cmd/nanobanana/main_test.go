@@ -635,6 +635,27 @@ func TestJSONResult(t *testing.T) {
 	}
 }
 
+func TestDetectMIMETypeStdin(t *testing.T) {
+	// When path is "-", extension detection is skipped, falls back to content
+	// Create a minimal PNG header
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{255, 0, 0, 255})
+	var buf bytes.Buffer
+	png.Encode(&buf, img)
+
+	got := detectMIMEType("-", buf.Bytes())
+	if got != "image/png" {
+		t.Errorf("detectMIMEType(\"-\", pngData) = %q, want image/png", got)
+	}
+
+	// JPEG detection from content
+	jpgHeader := []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46}
+	got = detectMIMEType("-", jpgHeader)
+	if got != "image/jpeg" {
+		t.Errorf("detectMIMEType(\"-\", jpgHeader) = %q, want image/jpeg", got)
+	}
+}
+
 func TestOpenFileCommand(t *testing.T) {
 	// Just verify openFile doesn't panic with a non-existent file
 	// The command will fail but that's fine — we just test it doesn't crash

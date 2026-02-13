@@ -34,7 +34,7 @@ nanobanana generate "a cat in space"
 
 ```bash
 nanobanana generate "prompt"          # Generate an image (alias: gen)
-nanobanana edit photo.jpg "prompt"    # Edit an existing image
+nanobanana edit photo.jpg "prompt"    # Edit an existing image (use - for stdin)
 nanobanana setup                      # Configure API key
 nanobanana config                     # Show current configuration
 nanobanana version                    # Show version
@@ -70,6 +70,9 @@ nanobanana generate --preview "a blue sky"
 nanobanana edit photo.jpg "make it look like a watercolor painting"
 nanobanana edit --preview photo.jpg "remove the background"
 
+# Piping: use - for stdin input and -o - for stdout output
+nanobanana generate -o - "a red circle" | nanobanana edit -o result.png - "make it blue"
+
 # Quiet mode for scripting (prints only file path)
 nanobanana gen -q "logo" | xargs open
 ```
@@ -81,7 +84,7 @@ Flags go after the subcommand: `nanobanana generate --flag "prompt"`.
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--model` | `-m` | `flash` | Model: `flash`, `pro`, or a full model name |
-| `--output` | `-o` | auto | Output file path |
+| `--output` | `-o` | auto | Output file path (`-` for stdout) |
 | `--aspect` | `-a` | `1:1` | Aspect ratio hint: `1:1`, `16:9`, `9:16`, `4:3`, `3:4` |
 | `--size` | `-s` | `1K` | Size hint: `1K`, `2K`, `4K` |
 | `--count` | `-n` | `1` | Number of images to generate (1-8, `generate` only) |
