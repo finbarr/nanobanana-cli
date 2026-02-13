@@ -179,65 +179,48 @@ jobs:
           TAG: ${{ steps.version.outputs.TAG }}
           SHA_DARWIN_ARM64: ${{ steps.sha.outputs.SHA_DARWIN_ARM64 }}
           SHA_DARWIN_AMD64: ${{ steps.sha.outputs.SHA_DARWIN_AMD64 }}
-          SHA_LINUX_ARM64: ${{ steps.sha.outputs.SHA_LINUX_ARM64 }}
-          SHA_LINUX_AMD64: ${{ steps.sha.outputs.SHA_LINUX_AMD64 }}
         run: |
           git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/finbarr/homebrew-tap.git
           cd homebrew-tap
 
-          # Remove old formula name if it exists
+          # Remove old formula if it exists
           rm -f Formula/nanobanana.rb
+          rm -f Formula/nanobanana-cli.rb
 
-          cat > Formula/nanobanana-cli.rb << 'EOF'
-          class NanobananaCli < Formula
-            desc "Generate and edit images with Gemini from the command line"
-            homepage "https://github.com/finbarr/nanobanana-cli"
+          # Create Casks directory
+          mkdir -p Casks
+
+          cat > Casks/nanobanana-cli.rb << 'EOF'
+          cask "nanobanana-cli" do
             version "__VERSION__"
             license "MIT"
 
-            on_macos do
-              on_arm do
-                url "https://github.com/finbarr/nanobanana-cli/releases/download/__TAG__/nanobanana-darwin-arm64.tar.gz"
-                sha256 "__SHA_DARWIN_ARM64__"
-              end
-              on_intel do
-                url "https://github.com/finbarr/nanobanana-cli/releases/download/__TAG__/nanobanana-darwin-amd64.tar.gz"
-                sha256 "__SHA_DARWIN_AMD64__"
-              end
+            on_arm do
+              sha256 "__SHA_DARWIN_ARM64__"
+              url "https://github.com/finbarr/nanobanana-cli/releases/download/__TAG__/nanobanana-darwin-arm64.tar.gz"
+            end
+            on_intel do
+              sha256 "__SHA_DARWIN_AMD64__"
+              url "https://github.com/finbarr/nanobanana-cli/releases/download/__TAG__/nanobanana-darwin-amd64.tar.gz"
             end
 
-            on_linux do
-              on_arm do
-                url "https://github.com/finbarr/nanobanana-cli/releases/download/__TAG__/nanobanana-linux-arm64.tar.gz"
-                sha256 "__SHA_LINUX_ARM64__"
-              end
-              on_intel do
-                url "https://github.com/finbarr/nanobanana-cli/releases/download/__TAG__/nanobanana-linux-amd64.tar.gz"
-                sha256 "__SHA_LINUX_AMD64__"
-              end
-            end
+            name "nanobanana-cli"
+            desc "Generate and edit images with Gemini from the command line"
+            homepage "https://github.com/finbarr/nanobanana-cli"
 
-            def install
-              bin.install "nanobanana"
-            end
-
-            test do
-              assert_match version.to_s, shell_output("#{bin}/nanobanana version")
-            end
+            binary "nanobanana"
           end
           EOF
 
           # Remove leading whitespace and substitute values
-          sed -i 's/^          //' Formula/nanobanana-cli.rb
-          sed -i "s/__VERSION__/${VERSION}/g" Formula/nanobanana-cli.rb
-          sed -i "s/__TAG__/${TAG}/g" Formula/nanobanana-cli.rb
-          sed -i "s/__SHA_DARWIN_ARM64__/${SHA_DARWIN_ARM64}/g" Formula/nanobanana-cli.rb
-          sed -i "s/__SHA_DARWIN_AMD64__/${SHA_DARWIN_AMD64}/g" Formula/nanobanana-cli.rb
-          sed -i "s/__SHA_LINUX_ARM64__/${SHA_LINUX_ARM64}/g" Formula/nanobanana-cli.rb
-          sed -i "s/__SHA_LINUX_AMD64__/${SHA_LINUX_AMD64}/g" Formula/nanobanana-cli.rb
+          sed -i 's/^          //' Casks/nanobanana-cli.rb
+          sed -i "s/__VERSION__/${VERSION}/g" Casks/nanobanana-cli.rb
+          sed -i "s/__TAG__/${TAG}/g" Casks/nanobanana-cli.rb
+          sed -i "s/__SHA_DARWIN_ARM64__/${SHA_DARWIN_ARM64}/g" Casks/nanobanana-cli.rb
+          sed -i "s/__SHA_DARWIN_AMD64__/${SHA_DARWIN_AMD64}/g" Casks/nanobanana-cli.rb
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A Formula/
+          git add -A
           git commit -m "Update nanobanana-cli to v${VERSION}"
           git push
