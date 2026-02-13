@@ -605,3 +605,40 @@ func TestModelAliases(t *testing.T) {
 		t.Errorf("expected pro alias to map to %q", modelPro)
 	}
 }
+
+func TestJSONResult(t *testing.T) {
+	r := jsonResult{
+		File:   "test.png",
+		Model:  "gemini-2.5-flash-image",
+		Prompt: "a cat",
+		Bytes:  1234,
+	}
+	data, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	var got jsonResult
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if got.File != "test.png" {
+		t.Errorf("expected file test.png, got %q", got.File)
+	}
+	if got.Model != "gemini-2.5-flash-image" {
+		t.Errorf("expected model gemini-2.5-flash-image, got %q", got.Model)
+	}
+	if got.Prompt != "a cat" {
+		t.Errorf("expected prompt 'a cat', got %q", got.Prompt)
+	}
+	if got.Bytes != 1234 {
+		t.Errorf("expected bytes 1234, got %d", got.Bytes)
+	}
+}
+
+func TestOpenFileCommand(t *testing.T) {
+	// Just verify openFile doesn't panic with a non-existent file
+	// The command will fail but that's fine — we just test it doesn't crash
+	err := openFile("/nonexistent/path.png")
+	// On CI or systems without display, the command may fail, that's OK
+	_ = err
+}

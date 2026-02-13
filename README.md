@@ -48,17 +48,27 @@ nanobanana help                       # Show help
 nanobanana generate "a cat in space"
 
 # Widescreen with custom output path
-nanobanana generate "sunset over mountains" --aspect 16:9 --output sunset.png
+nanobanana generate --aspect 16:9 --output sunset.png "sunset over mountains"
 
 # Use the pro model
-nanobanana generate "a photorealistic forest" --model pro
+nanobanana generate --model pro "a photorealistic forest"
 
 # Aspect and size can also just go in the prompt
 nanobanana generate "a 4K panoramic sunset in 21:9 aspect ratio"
 
+# Generate 4 variations
+nanobanana generate --count 4 "logo ideas for a coffee shop"
+
+# JSON output for scripts and agents
+nanobanana generate --json "a simple icon"
+# → {"file":"nanobanana_20260212_120000.png","model":"gemini-2.5-flash-image","prompt":"a simple icon","bytes":45678}
+
+# Open image immediately after generating
+nanobanana generate --preview "a blue sky"
+
 # Edit an existing image
 nanobanana edit photo.jpg "make it look like a watercolor painting"
-nanobanana edit photo.jpg "remove the background" -o clean.png
+nanobanana edit --preview photo.jpg "remove the background"
 
 # Quiet mode for scripting (prints only file path)
 nanobanana gen -q "logo" | xargs open
@@ -74,7 +84,10 @@ Flags go after the subcommand: `nanobanana generate --flag "prompt"`.
 | `--output` | `-o` | auto | Output file path |
 | `--aspect` | `-a` | `1:1` | Aspect ratio hint: `1:1`, `16:9`, `9:16`, `4:3`, `3:4` |
 | `--size` | `-s` | `1K` | Size hint: `1K`, `2K`, `4K` |
+| `--count` | `-n` | `1` | Number of images to generate (1-8, `generate` only) |
 | `--quiet` | `-q` | | Suppress output, print only file path to stdout |
+| `--json` | | | Output result as JSON to stdout |
+| `--preview` | `-p` | | Open image after saving |
 
 > **Note on `--aspect` and `--size`:** These are convenience shortcuts that append aspect ratio and resolution hints to your prompt. The Gemini API has no native parameters for image dimensions — the model may not always produce the exact size requested. You can also specify any aspect ratio or size directly in your prompt text (e.g., `"a 4K panoramic sunset in 21:9"`).
 

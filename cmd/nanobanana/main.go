@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -488,6 +489,30 @@ func startSpinner(msg string) func() {
 	}
 }
 
+// --- JSON output ---
+
+type jsonResult struct {
+	File   string `json:"file"`
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+	Bytes  int    `json:"bytes"`
+}
+
+// --- Preview ---
+
+func openFile(path string) error {
+	var cmd string
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = "open"
+	case "windows":
+		cmd = "start"
+	default:
+		cmd = "xdg-open"
+	}
+	return exec.Command(cmd, path).Start()
+}
+
 // --- Validation ---
 
 func validateAspectRatio(ar string) error {
@@ -573,11 +598,14 @@ func runGenerate(args []string) int {
 	fs.SetOutput(io.Discard)
 
 	var (
-		modelFlag  string
-		outputFlag string
-		aspectFlag string
-		sizeFlag   string
-		quietFlag  bool
+		modelFlag   string
+		outputFlag  string
+		aspectFlag  string
+		sizeFlag    string
+		quietFlag   bool
+		jsonFlag    bool
+		previewFlag bool
+		countFlag   int
 	)
 
 	fs.StringVar(&modelFlag, "model", "", "model: flash, pro, or full model name")
@@ -590,12 +618,17 @@ func runGenerate(args []string) int {
 	fs.StringVar(&sizeFlag, "s", "1K", "image size (shorthand)")
 	fs.BoolVar(&quietFlag, "quiet", false, "suppress output, print only file path")
 	fs.BoolVar(&quietFlag, "q", false, "suppress output (shorthand)")
+	fs.BoolVar(&jsonFlag, "json", false, "output result as JSON")
+	fs.BoolVar(&previewFlag, "preview", false, "open image after saving")
+	fs.BoolVar(&previewFlag, "p", false, "open image after saving (shorthand)")
+	fs.IntVar(&countFlag, "count", 1, "number of images to generate")
+	fs.IntVar(&countFlag, "n", 1, "number of images (shorthand)")
 
 	if err := fs.Parse(args); err != nil {
 		errorf("invalid flags: %v", err)
 		return 1
 	}
-	quiet = quietFlag
+	quiet = quietFlag || jsonFlag
 
 	remaining := fs.Args()
 	if len(remaining) == 0 {
@@ -603,6 +636,11 @@ func runGenerate(args []string) int {
 		return 1
 	}
 	prompt := strings.Join(remaining, " ")
+
+	if countFlag < 1 || countFlag > 8 {
+		errorf("--count must be between 1 and 8")
+		return 1
+	}
 
 	cfg, err := loadConfig()
 	if err != nil {
@@ -634,31 +672,74 @@ func runGenerate(args []string) int {
 		return 1
 	}
 
-	info("Generating with %s (%s, %s, %s)", modelFlag, aspectFlag, sizeFlag, prompt)
-	stop := startSpinner("Generating image...")
-
-	imgData, mimeType, err := generateImage(apiKey, modelName, prompt, aspectFlag, sizeFlag)
-	stop()
-	if err != nil {
-		errorf("%v", err)
+	if countFlag > 1 && outputFlag != "" {
+		errorf("--output cannot be used with --count > 1 (files are auto-named)")
 		return 1
 	}
 
-	// Determine output path
-	outPath := outputFlag
-	if outPath == "" {
-		outPath = autoName("nanobanana", mimeType)
+	var results []jsonResult
+
+	for i := range countFlag {
+		if countFlag > 1 {
+			info("Generating image %d/%d with %s (%s)", i+1, countFlag, modelFlag, prompt)
+		} else {
+			info("Generating with %s (%s, %s, %s)", modelFlag, aspectFlag, sizeFlag, prompt)
+		}
+		stop := startSpinner("Generating image...")
+
+		imgData, mimeType, err := generateImage(apiKey, modelName, prompt, aspectFlag, sizeFlag)
+		stop()
+		if err != nil {
+			errorf("%v", err)
+			if countFlag > 1 {
+				continue // try remaining images
+			}
+			return 1
+		}
+
+		// Determine output path
+		outPath := outputFlag
+		if outPath == "" {
+			outPath = autoName("nanobanana", mimeType)
+		}
+
+		if err := writeImage(outPath, imgData, mimeType); err != nil {
+			errorf("writing image: %v", err)
+			return 1
+		}
+
+		results = append(results, jsonResult{
+			File:   outPath,
+			Model:  modelName,
+			Prompt: prompt,
+			Bytes:  len(imgData),
+		})
+
+		if !jsonFlag {
+			if quietFlag {
+				fmt.Println(outPath)
+			} else {
+				success("Saved to %s (%d bytes)", outPath, len(imgData))
+			}
+		}
+
+		if previewFlag {
+			if err := openFile(outPath); err != nil {
+				warn("could not open preview: %v", err)
+			}
+		}
 	}
 
-	if err := writeImage(outPath, imgData, mimeType); err != nil {
-		errorf("writing image: %v", err)
+	if jsonFlag {
+		if countFlag == 1 && len(results) == 1 {
+			json.NewEncoder(os.Stdout).Encode(results[0])
+		} else {
+			json.NewEncoder(os.Stdout).Encode(results)
+		}
+	}
+
+	if countFlag > 1 && len(results) == 0 {
 		return 1
-	}
-
-	if quiet {
-		fmt.Println(outPath)
-	} else {
-		success("Saved to %s (%d bytes)", outPath, len(imgData))
 	}
 	return 0
 }
@@ -668,11 +749,13 @@ func runEdit(args []string) int {
 	fs.SetOutput(io.Discard)
 
 	var (
-		modelFlag  string
-		outputFlag string
-		aspectFlag string
-		sizeFlag   string
-		quietFlag  bool
+		modelFlag   string
+		outputFlag  string
+		aspectFlag  string
+		sizeFlag    string
+		quietFlag   bool
+		jsonFlag    bool
+		previewFlag bool
 	)
 
 	fs.StringVar(&modelFlag, "model", "", "model: flash, pro, or full model name")
@@ -685,12 +768,15 @@ func runEdit(args []string) int {
 	fs.StringVar(&sizeFlag, "s", "1K", "image size (shorthand)")
 	fs.BoolVar(&quietFlag, "quiet", false, "suppress output, print only file path")
 	fs.BoolVar(&quietFlag, "q", false, "suppress output (shorthand)")
+	fs.BoolVar(&jsonFlag, "json", false, "output result as JSON")
+	fs.BoolVar(&previewFlag, "preview", false, "open image after saving")
+	fs.BoolVar(&previewFlag, "p", false, "open image after saving (shorthand)")
 
 	if err := fs.Parse(args); err != nil {
 		errorf("invalid flags: %v", err)
 		return 1
 	}
-	quiet = quietFlag
+	quiet = quietFlag || jsonFlag
 
 	remaining := fs.Args()
 	if len(remaining) < 2 {
@@ -760,11 +846,25 @@ func runEdit(args []string) int {
 		return 1
 	}
 
-	if quiet {
+	if jsonFlag {
+		json.NewEncoder(os.Stdout).Encode(jsonResult{
+			File:   outPath,
+			Model:  modelName,
+			Prompt: prompt,
+			Bytes:  len(resultData),
+		})
+	} else if quietFlag {
 		fmt.Println(outPath)
 	} else {
 		success("Saved to %s (%d bytes)", outPath, len(resultData))
 	}
+
+	if previewFlag {
+		if err := openFile(outPath); err != nil {
+			warn("could not open preview: %v", err)
+		}
+	}
+
 	return 0
 }
 
@@ -872,9 +972,12 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "%sFLAGS:%s\n", colorBold, colorReset)
 	fmt.Fprintln(os.Stderr, "  -m, --model <name>    Model: flash, pro, or a full model name")
 	fmt.Fprintln(os.Stderr, "  -o, --output <path>   Output file path (default: auto-generated)")
-	fmt.Fprintln(os.Stderr, "  -a, --aspect <ratio>  Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4 (default: 1:1)")
-	fmt.Fprintln(os.Stderr, "  -s, --size <size>     Image size: 1K, 2K, 4K (default: 1K; 4K requires pro)")
+	fmt.Fprintln(os.Stderr, "  -a, --aspect <ratio>  Aspect ratio hint: 1:1, 16:9, 9:16, 4:3, 3:4 (default: 1:1)")
+	fmt.Fprintln(os.Stderr, "  -s, --size <size>     Size hint: 1K, 2K, 4K (default: 1K)")
+	fmt.Fprintln(os.Stderr, "  -n, --count <N>       Generate N image variations (1-8, generate only)")
 	fmt.Fprintln(os.Stderr, "  -q, --quiet           Suppress output, print only file path to stdout")
+	fmt.Fprintln(os.Stderr, "      --json            Output result as JSON to stdout")
+	fmt.Fprintln(os.Stderr, "  -p, --preview         Open image after saving")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintf(os.Stderr, "%sMODELS:%s\n", colorBold, colorReset)
 	fmt.Fprintln(os.Stderr, "  flash                 gemini-2.5-flash-image (fast, ~$0.04/img)")
@@ -890,8 +993,9 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  nanobanana generate \"a cat in space\"")
 	fmt.Fprintln(os.Stderr, "  nanobanana gen \"sunset\" --aspect 16:9 --output sunset.png")
 	fmt.Fprintln(os.Stderr, "  nanobanana generate \"4K wallpaper\" --model pro --size 4K")
-	fmt.Fprintln(os.Stderr, "  nanobanana edit photo.jpg \"make it cartoon\"")
+	fmt.Fprintln(os.Stderr, "  nanobanana generate \"logo ideas\" --count 4    # 4 variations")
+	fmt.Fprintln(os.Stderr, "  nanobanana generate \"icon\" --json              # JSON for scripts")
+	fmt.Fprintln(os.Stderr, "  nanobanana edit photo.jpg \"make it cartoon\" --preview")
 	fmt.Fprintln(os.Stderr, "  nanobanana edit photo.jpg \"watercolor style\" -o result.png")
-	fmt.Fprintln(os.Stderr, "  nanobanana gen \"logo\" -q | xargs open   # generate and open")
 	fmt.Fprintln(os.Stderr, "")
 }
