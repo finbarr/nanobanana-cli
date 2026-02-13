@@ -8,7 +8,7 @@ A fast, single-binary CLI for Google's Gemini image generation models. Text-to-i
 
 ```bash
 # Install via Homebrew (macOS/Linux)
-brew install finbarr/tap/nanobanana
+brew install finbarr/tap/nanobanana-cli
 
 # Or install via Go
 go install github.com/finbarr/nanobanana-cli/cmd/nanobanana@latest
