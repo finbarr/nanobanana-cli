@@ -193,7 +193,6 @@ jobs:
           cat > Casks/nanobanana-cli.rb << 'EOF'
           cask "nanobanana-cli" do
             version "__VERSION__"
-            license "MIT"
 
             on_arm do
               sha256 "__SHA_DARWIN_ARM64__"
@@ -205,7 +204,7 @@ jobs:
             end
 
             name "nanobanana-cli"
-            desc "Generate and edit images with Gemini from the command line"
+            desc "Generate and edit images with Gemini from the command-line"
             homepage "https://github.com/finbarr/nanobanana-cli"
 
             binary "nanobanana"
