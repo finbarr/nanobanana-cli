@@ -40,11 +40,17 @@ const (
 
 // Model aliases
 const (
-	modelFlash   = "gemini-2.5-flash-image"
-	modelPro     = "gemini-3-pro-image-preview"
-	apiBaseURL   = "https://generativelanguage.googleapis.com/v1beta/models"
-	httpTimeout  = 120 * time.Second
+	modelFlash  = "gemini-2.5-flash-image"
+	modelPro    = "gemini-3-pro-image-preview"
+	apiBaseURL  = "https://generativelanguage.googleapis.com/v1beta/models"
+	httpTimeout = 120 * time.Second
 )
+
+// Model alias map
+var modelAliases = map[string]string{
+	"flash": modelFlash,
+	"pro":   modelPro,
+}
 
 // Valid aspect ratios
 var validAspectRatios = map[string]bool{
@@ -61,6 +67,9 @@ var validSizes = map[string][2]int{
 	"2K": {2048, 2048},
 	"4K": {3840, 2160},
 }
+
+// quiet suppresses info/spinner output when true
+var quiet bool
 
 // --- Config ---
 
@@ -131,6 +140,21 @@ func resolveAPIKey(cfg *Config) (string, error) {
 	return "", fmt.Errorf("no API key found. Set NANOBANANA_GEMINI_API_KEY or run: nanobanana setup")
 }
 
+// resolveModelFlag returns the model flag value, applying precedence:
+// CLI flag > NANOBANANA_MODEL env > config file > default
+func resolveModelFlag(flagVal string, cfg *Config) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	if envModel := os.Getenv("NANOBANANA_MODEL"); envModel != "" {
+		return envModel
+	}
+	if cfg.Model != "" {
+		return cfg.Model
+	}
+	return "flash"
+}
+
 // --- API types ---
 
 type apiContent struct {
@@ -139,8 +163,8 @@ type apiContent struct {
 }
 
 type apiPart struct {
-	Text       string     `json:"text,omitempty"`
-	InlineData *apiBlob   `json:"inlineData,omitempty"`
+	Text       string   `json:"text,omitempty"`
+	InlineData *apiBlob `json:"inlineData,omitempty"`
 }
 
 type apiBlob struct {
@@ -149,7 +173,7 @@ type apiBlob struct {
 }
 
 type apiGenerationConfig struct {
-	ResponseMIMEType  string   `json:"responseMimeType,omitempty"`
+	ResponseMIMEType   string   `json:"responseMimeType,omitempty"`
 	ResponseModalities []string `json:"responseModalities,omitempty"`
 }
 
@@ -384,23 +408,42 @@ func writeImage(path string, data []byte, sourceMIME string) error {
 	}
 }
 
-func autoName(prefix string) string {
+func extForMIME(mime string) string {
+	switch mime {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	default:
+		return ".png"
+	}
+}
+
+func autoName(prefix, mime string) string {
 	ts := time.Now().Format("20060102_150405")
-	return fmt.Sprintf("%s_%s.png", prefix, ts)
+	return fmt.Sprintf("%s_%s%s", prefix, ts, extForMIME(mime))
 }
 
 // --- Output helpers ---
 
 func success(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, colorGreen+"✓ "+colorReset+format+"\n", args...)
+	if !quiet {
+		fmt.Fprintf(os.Stderr, colorGreen+"✓ "+colorReset+format+"\n", args...)
+	}
 }
 
 func info(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, colorBlue+"→ "+colorReset+format+"\n", args...)
+	if !quiet {
+		fmt.Fprintf(os.Stderr, colorBlue+"→ "+colorReset+format+"\n", args...)
+	}
 }
 
 func warn(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, colorYellow+"⚠ "+colorReset+format+"\n", args...)
+	if !quiet {
+		fmt.Fprintf(os.Stderr, colorYellow+"⚠ "+colorReset+format+"\n", args...)
+	}
 }
 
 func errorf(format string, args ...any) {
@@ -410,8 +453,10 @@ func errorf(format string, args ...any) {
 // --- Spinner ---
 
 func startSpinner(msg string) func() {
-	if !term.IsTerminal(int(os.Stderr.Fd())) {
-		fmt.Fprintf(os.Stderr, "%s...\n", msg)
+	if quiet || !term.IsTerminal(int(os.Stderr.Fd())) {
+		if !quiet {
+			fmt.Fprintf(os.Stderr, "%s...\n", msg)
+		}
 		return func() {}
 	}
 
@@ -464,21 +509,29 @@ func validateImageSize(size, model string) error {
 		}
 		return fmt.Errorf("invalid size %q (valid: %s)", size, strings.Join(valid, ", "))
 	}
-	if size == "4K" && model != "pro" {
+	if size == "4K" && !isProModel(model) {
 		return fmt.Errorf("4K size requires --model pro")
 	}
 	return nil
 }
 
+// isProModel returns true if the model string refers to the pro model,
+// whether by alias or full model name.
+func isProModel(model string) bool {
+	return model == "pro" || model == modelPro
+}
+
+// resolveModel maps an alias to a full model name, or passes through
+// a full model name directly.
 func resolveModel(alias string) (string, error) {
-	switch alias {
-	case "flash":
-		return modelFlash, nil
-	case "pro":
-		return modelPro, nil
-	default:
-		return "", fmt.Errorf("unknown model %q (valid: flash, pro)", alias)
+	if full, ok := modelAliases[alias]; ok {
+		return full, nil
 	}
+	// Accept full model names (anything containing a hyphen)
+	if strings.Contains(alias, "-") {
+		return alias, nil
+	}
+	return "", fmt.Errorf("unknown model %q (valid: flash, pro, or a full model name)", alias)
 }
 
 // --- Commands ---
@@ -524,21 +577,25 @@ func runGenerate(args []string) int {
 		outputFlag string
 		aspectFlag string
 		sizeFlag   string
+		quietFlag  bool
 	)
 
-	fs.StringVar(&modelFlag, "model", "", "model: flash or pro")
-	fs.StringVar(&modelFlag, "m", "", "model: flash or pro (shorthand)")
+	fs.StringVar(&modelFlag, "model", "", "model: flash, pro, or full model name")
+	fs.StringVar(&modelFlag, "m", "", "model (shorthand)")
 	fs.StringVar(&outputFlag, "output", "", "output file path")
 	fs.StringVar(&outputFlag, "o", "", "output file path (shorthand)")
 	fs.StringVar(&aspectFlag, "aspect", "1:1", "aspect ratio")
 	fs.StringVar(&aspectFlag, "a", "1:1", "aspect ratio (shorthand)")
 	fs.StringVar(&sizeFlag, "size", "1K", "image size: 1K, 2K, 4K")
 	fs.StringVar(&sizeFlag, "s", "1K", "image size (shorthand)")
+	fs.BoolVar(&quietFlag, "quiet", false, "suppress output, print only file path")
+	fs.BoolVar(&quietFlag, "q", false, "suppress output (shorthand)")
 
 	if err := fs.Parse(args); err != nil {
 		errorf("invalid flags: %v", err)
 		return 1
 	}
+	quiet = quietFlag
 
 	remaining := fs.Args()
 	if len(remaining) == 0 {
@@ -553,13 +610,7 @@ func runGenerate(args []string) int {
 		return 1
 	}
 
-	// Use config model as default if flag not set
-	if modelFlag == "" {
-		modelFlag = cfg.Model
-		if modelFlag == "" {
-			modelFlag = "flash"
-		}
-	}
+	modelFlag = resolveModelFlag(modelFlag, cfg)
 
 	// Validate
 	if err := validateAspectRatio(aspectFlag); err != nil {
@@ -596,7 +647,7 @@ func runGenerate(args []string) int {
 	// Determine output path
 	outPath := outputFlag
 	if outPath == "" {
-		outPath = autoName("nanobanana")
+		outPath = autoName("nanobanana", mimeType)
 	}
 
 	if err := writeImage(outPath, imgData, mimeType); err != nil {
@@ -604,7 +655,11 @@ func runGenerate(args []string) int {
 		return 1
 	}
 
-	success("Saved to %s (%d bytes)", outPath, len(imgData))
+	if quiet {
+		fmt.Println(outPath)
+	} else {
+		success("Saved to %s (%d bytes)", outPath, len(imgData))
+	}
 	return 0
 }
 
@@ -617,21 +672,25 @@ func runEdit(args []string) int {
 		outputFlag string
 		aspectFlag string
 		sizeFlag   string
+		quietFlag  bool
 	)
 
-	fs.StringVar(&modelFlag, "model", "", "model: flash or pro")
-	fs.StringVar(&modelFlag, "m", "", "model: flash or pro (shorthand)")
+	fs.StringVar(&modelFlag, "model", "", "model: flash, pro, or full model name")
+	fs.StringVar(&modelFlag, "m", "", "model (shorthand)")
 	fs.StringVar(&outputFlag, "output", "", "output file path")
 	fs.StringVar(&outputFlag, "o", "", "output file path (shorthand)")
 	fs.StringVar(&aspectFlag, "aspect", "1:1", "aspect ratio")
 	fs.StringVar(&aspectFlag, "a", "1:1", "aspect ratio (shorthand)")
 	fs.StringVar(&sizeFlag, "size", "1K", "image size: 1K, 2K, 4K")
 	fs.StringVar(&sizeFlag, "s", "1K", "image size (shorthand)")
+	fs.BoolVar(&quietFlag, "quiet", false, "suppress output, print only file path")
+	fs.BoolVar(&quietFlag, "q", false, "suppress output (shorthand)")
 
 	if err := fs.Parse(args); err != nil {
 		errorf("invalid flags: %v", err)
 		return 1
 	}
+	quiet = quietFlag
 
 	remaining := fs.Args()
 	if len(remaining) < 2 {
@@ -647,12 +706,7 @@ func runEdit(args []string) int {
 		return 1
 	}
 
-	if modelFlag == "" {
-		modelFlag = cfg.Model
-		if modelFlag == "" {
-			modelFlag = "flash"
-		}
-	}
+	modelFlag = resolveModelFlag(modelFlag, cfg)
 
 	// Validate
 	if err := validateAspectRatio(aspectFlag); err != nil {
@@ -706,7 +760,11 @@ func runEdit(args []string) int {
 		return 1
 	}
 
-	success("Saved to %s (%d bytes)", outPath, len(resultData))
+	if quiet {
+		fmt.Println(outPath)
+	} else {
+		success("Saved to %s (%d bytes)", outPath, len(resultData))
+	}
 	return 0
 }
 
@@ -781,12 +839,15 @@ func runConfig() int {
 
 	fmt.Fprintf(os.Stderr, "  %sModel:%s        %s\n", colorBold, colorReset, cfg.Model)
 
-	// Show env var override
+	// Show env var overrides
 	for _, env := range []string{"NANOBANANA_GEMINI_API_KEY", "GEMINI_API_KEY"} {
 		if os.Getenv(env) != "" {
 			fmt.Fprintf(os.Stderr, "\n  %s%s:%s set (overrides config)%s\n", colorYellow, env, colorReset, colorReset)
 			break
 		}
+	}
+	if envModel := os.Getenv("NANOBANANA_MODEL"); envModel != "" {
+		fmt.Fprintf(os.Stderr, "  %sNANOBANANA_MODEL:%s %s (overrides config)%s\n", colorYellow, colorReset, envModel, colorReset)
 	}
 
 	fmt.Fprintln(os.Stderr)
@@ -801,28 +862,36 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "\n  %snanobanana%s — generate and edit images with Gemini\n\n", colorBold, colorReset)
 	fmt.Fprintf(os.Stderr, "  %sVersion:%s %s\n\n", colorBold, colorReset, Version)
 	fmt.Fprintf(os.Stderr, "%sUSAGE:%s\n", colorBold, colorReset)
-	fmt.Fprintln(os.Stderr, "  nanobanana generate \"prompt\"     Generate an image from text")
-	fmt.Fprintln(os.Stderr, "  nanobanana edit <image> \"prompt\"  Edit an existing image")
-	fmt.Fprintln(os.Stderr, "  nanobanana setup                 Configure API key")
-	fmt.Fprintln(os.Stderr, "  nanobanana config                Show current configuration")
-	fmt.Fprintln(os.Stderr, "  nanobanana version               Show version info")
-	fmt.Fprintln(os.Stderr, "  nanobanana help                  Show this help")
+	fmt.Fprintln(os.Stderr, "  nanobanana generate \"prompt\"      Generate an image from text (alias: gen)")
+	fmt.Fprintln(os.Stderr, "  nanobanana edit <image> \"prompt\"   Edit an existing image")
+	fmt.Fprintln(os.Stderr, "  nanobanana setup                  Configure API key")
+	fmt.Fprintln(os.Stderr, "  nanobanana config                 Show current configuration")
+	fmt.Fprintln(os.Stderr, "  nanobanana version                Show version info")
+	fmt.Fprintln(os.Stderr, "  nanobanana help                   Show this help")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintf(os.Stderr, "%sFLAGS:%s\n", colorBold, colorReset)
-	fmt.Fprintln(os.Stderr, "  -m, --model <name>    Model: flash (fast, ~$0.04/img) or pro (quality, ~$0.13/img)")
+	fmt.Fprintln(os.Stderr, "  -m, --model <name>    Model: flash, pro, or a full model name")
 	fmt.Fprintln(os.Stderr, "  -o, --output <path>   Output file path (default: auto-generated)")
 	fmt.Fprintln(os.Stderr, "  -a, --aspect <ratio>  Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4 (default: 1:1)")
 	fmt.Fprintln(os.Stderr, "  -s, --size <size>     Image size: 1K, 2K, 4K (default: 1K; 4K requires pro)")
+	fmt.Fprintln(os.Stderr, "  -q, --quiet           Suppress output, print only file path to stdout")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintf(os.Stderr, "%sMODELS:%s\n", colorBold, colorReset)
+	fmt.Fprintln(os.Stderr, "  flash                 gemini-2.5-flash-image (fast, ~$0.04/img)")
+	fmt.Fprintln(os.Stderr, "  pro                   gemini-3-pro-image-preview (quality, ~$0.13/img)")
+	fmt.Fprintln(os.Stderr, "  <full-name>           Any Gemini model name (e.g., gemini-2.5-flash-image)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintf(os.Stderr, "%sCONFIG:%s\n", colorBold, colorReset)
 	fmt.Fprintf(os.Stderr, "  File: %s\n", configPath())
-	fmt.Fprintln(os.Stderr, "  Env:  NANOBANANA_GEMINI_API_KEY (or GEMINI_API_KEY, overrides config)")
+	fmt.Fprintln(os.Stderr, "  Env:  NANOBANANA_GEMINI_API_KEY (or GEMINI_API_KEY)")
+	fmt.Fprintln(os.Stderr, "  Env:  NANOBANANA_MODEL (overrides config default model)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintf(os.Stderr, "%sEXAMPLES:%s\n", colorBold, colorReset)
 	fmt.Fprintln(os.Stderr, "  nanobanana generate \"a cat in space\"")
-	fmt.Fprintln(os.Stderr, "  nanobanana generate \"sunset\" --aspect 16:9 --output sunset.png")
+	fmt.Fprintln(os.Stderr, "  nanobanana gen \"sunset\" --aspect 16:9 --output sunset.png")
 	fmt.Fprintln(os.Stderr, "  nanobanana generate \"4K wallpaper\" --model pro --size 4K")
 	fmt.Fprintln(os.Stderr, "  nanobanana edit photo.jpg \"make it cartoon\"")
 	fmt.Fprintln(os.Stderr, "  nanobanana edit photo.jpg \"watercolor style\" -o result.png")
+	fmt.Fprintln(os.Stderr, "  nanobanana gen \"logo\" -q | xargs open   # generate and open")
 	fmt.Fprintln(os.Stderr, "")
 }

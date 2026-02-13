@@ -1,12 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"image"
 	"image/color"
 	"image/png"
-	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,6 +24,9 @@ func TestResolveModel(t *testing.T) {
 	}{
 		{"flash", modelFlash, false},
 		{"pro", modelPro, false},
+		{"gemini-2.5-flash-image", "gemini-2.5-flash-image", false},
+		{"gemini-3-pro-image-preview", "gemini-3-pro-image-preview", false},
+		{"some-future-model-v2", "some-future-model-v2", false},
 		{"unknown", "", true},
 		{"", "", true},
 	}
@@ -37,6 +40,27 @@ func TestResolveModel(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("resolveModel(%q) = %q, want %q", tt.alias, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsProModel(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{"pro", true},
+		{modelPro, true},
+		{"flash", false},
+		{modelFlash, false},
+		{"some-other-model", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := isProModel(tt.model); got != tt.want {
+				t.Errorf("isProModel(%q) = %v, want %v", tt.model, got, tt.want)
 			}
 		})
 	}
@@ -67,9 +91,10 @@ func TestValidateImageSize(t *testing.T) {
 		{"1K", "flash", false},
 		{"2K", "flash", false},
 		{"4K", "pro", false},
-		{"4K", "flash", true},  // 4K requires pro
-		{"8K", "pro", true},    // invalid size
-		{"", "flash", true},    // empty
+		{"4K", modelPro, false}, // full model name should also work
+		{"4K", "flash", true},   // 4K requires pro
+		{"8K", "pro", true},     // invalid size
+		{"", "flash", true},     // empty
 	}
 
 	for _, tt := range tests {
@@ -83,18 +108,56 @@ func TestValidateImageSize(t *testing.T) {
 }
 
 func TestAutoName(t *testing.T) {
-	name := autoName("nanobanana")
-	if !strings.HasPrefix(name, "nanobanana_") {
-		t.Errorf("autoName should start with prefix, got %q", name)
+	tests := []struct {
+		mime    string
+		wantExt string
+	}{
+		{"image/png", ".png"},
+		{"image/jpeg", ".jpg"},
+		{"image/gif", ".gif"},
+		{"image/webp", ".webp"},
+		{"", ".png"},
 	}
-	if !strings.HasSuffix(name, ".png") {
-		t.Errorf("autoName should end with .png, got %q", name)
+
+	for _, tt := range tests {
+		t.Run(tt.mime, func(t *testing.T) {
+			name := autoName("nanobanana", tt.mime)
+			if !strings.HasPrefix(name, "nanobanana_") {
+				t.Errorf("autoName should start with prefix, got %q", name)
+			}
+			if !strings.HasSuffix(name, tt.wantExt) {
+				t.Errorf("autoName with mime %q should end with %q, got %q", tt.mime, tt.wantExt, name)
+			}
+		})
 	}
 
 	// Check timestamp format
+	name := autoName("nanobanana", "image/png")
 	ts := time.Now().Format("20060102")
 	if !strings.Contains(name, ts) {
 		t.Errorf("autoName should contain today's date %q, got %q", ts, name)
+	}
+}
+
+func TestExtForMIME(t *testing.T) {
+	tests := []struct {
+		mime string
+		want string
+	}{
+		{"image/png", ".png"},
+		{"image/jpeg", ".jpg"},
+		{"image/gif", ".gif"},
+		{"image/webp", ".webp"},
+		{"", ".png"},
+		{"image/unknown", ".png"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.mime, func(t *testing.T) {
+			if got := extForMIME(tt.mime); got != tt.want {
+				t.Errorf("extForMIME(%q) = %q, want %q", tt.mime, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -192,6 +255,38 @@ func TestResolveAPIKey(t *testing.T) {
 	_, err = resolveAPIKey(cfg2)
 	if err == nil {
 		t.Error("expected error when no API key")
+	}
+}
+
+func TestResolveModelFlag(t *testing.T) {
+	cfg := &Config{Model: "pro"}
+
+	// CLI flag takes precedence
+	t.Setenv("NANOBANANA_MODEL", "")
+	got := resolveModelFlag("flash", cfg)
+	if got != "flash" {
+		t.Errorf("expected flash from flag, got %q", got)
+	}
+
+	// NANOBANANA_MODEL env takes precedence over config
+	t.Setenv("NANOBANANA_MODEL", "gemini-2.5-flash-image")
+	got = resolveModelFlag("", cfg)
+	if got != "gemini-2.5-flash-image" {
+		t.Errorf("expected gemini-2.5-flash-image from env, got %q", got)
+	}
+
+	// Falls back to config
+	t.Setenv("NANOBANANA_MODEL", "")
+	got = resolveModelFlag("", cfg)
+	if got != "pro" {
+		t.Errorf("expected pro from config, got %q", got)
+	}
+
+	// Falls back to default
+	t.Setenv("NANOBANANA_MODEL", "")
+	got = resolveModelFlag("", &Config{})
+	if got != "flash" {
+		t.Errorf("expected flash default, got %q", got)
 	}
 }
 
@@ -349,20 +444,12 @@ func TestAPIGenerateImage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Override API base URL for testing
-	origURL := apiBaseURL
-	// We can't easily override the const, so test doAPICall directly
-	// by constructing the request ourselves
-	_ = origURL
-
 	// Test the HTTP server directly
 	reqBody := apiRequest{
 		Contents: []apiContent{
 			{Parts: []apiPart{{Text: "test prompt"}}},
 		},
-		GenerationConfig: &apiGenerationConfig{
-			ResponseModalities: []string{"TEXT", "IMAGE"},
-		},
+		GenerationConfig: nil,
 	}
 	jsonData, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", server.URL, bytes.NewReader(jsonData))
@@ -442,7 +529,6 @@ func TestAPIErrorHandling(t *testing.T) {
 			}))
 			defer server.Close()
 
-			// Make request directly to test server
 			reqBody := apiRequest{
 				Contents: []apiContent{
 					{Parts: []apiPart{{Text: "test"}}},
@@ -459,18 +545,15 @@ func TestAPIErrorHandling(t *testing.T) {
 			}
 			defer resp.Body.Close()
 
-			// Simulate our error handling logic
-			body, _ := os.ReadFile("/dev/stdin") // won't read, just for pattern
-			_ = body
-
+			// Verify status codes match expected
 			switch {
 			case resp.StatusCode == 401 || resp.StatusCode == 403:
-				if !strings.Contains("authentication failed", tt.wantErr) {
-					t.Errorf("expected %q in error", tt.wantErr)
+				if !strings.Contains(tt.wantErr, "authentication") {
+					t.Errorf("expected authentication error for %d", resp.StatusCode)
 				}
 			case resp.StatusCode == 429:
-				if !strings.Contains("rate limit", tt.wantErr) {
-					t.Errorf("expected %q in error", tt.wantErr)
+				if !strings.Contains(tt.wantErr, "rate limit") {
+					t.Errorf("expected rate limit error for 429")
 				}
 			}
 		})
@@ -511,5 +594,14 @@ func TestValidSizes(t *testing.T) {
 		if got != v {
 			t.Errorf("validSizes[%q] = %v, want %v", k, got, v)
 		}
+	}
+}
+
+func TestModelAliases(t *testing.T) {
+	if modelAliases["flash"] != modelFlash {
+		t.Errorf("expected flash alias to map to %q", modelFlash)
+	}
+	if modelAliases["pro"] != modelPro {
+		t.Errorf("expected pro alias to map to %q", modelPro)
 	}
 }

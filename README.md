@@ -33,7 +33,7 @@ nanobanana generate "a cat in space"
 ## Commands
 
 ```bash
-nanobanana generate "prompt"          # Generate an image from text
+nanobanana generate "prompt"          # Generate an image (alias: gen)
 nanobanana edit photo.jpg "prompt"    # Edit an existing image
 nanobanana setup                      # Configure API key
 nanobanana config                     # Show current configuration
@@ -56,6 +56,9 @@ nanobanana generate "4K wallpaper of a forest" --model pro --size 4K
 # Edit an existing image
 nanobanana edit photo.jpg "make it look like a watercolor painting"
 nanobanana edit photo.jpg "remove the background" -o clean.png
+
+# Quiet mode for scripting (prints only file path)
+nanobanana gen -q "logo" | xargs open
 ```
 
 ## Flags
@@ -64,10 +67,11 @@ Flags go after the subcommand: `nanobanana generate --flag "prompt"`.
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--model` | `-m` | `flash` | Model: `flash` (fast, ~$0.04/img) or `pro` (quality, ~$0.13/img) |
+| `--model` | `-m` | `flash` | Model: `flash`, `pro`, or a full model name |
 | `--output` | `-o` | auto | Output file path |
 | `--aspect` | `-a` | `1:1` | Aspect ratio: `1:1`, `16:9`, `9:16`, `4:3`, `3:4` |
 | `--size` | `-s` | `1K` | Image size: `1K`, `2K`, `4K` (4K requires `pro`) |
+| `--quiet` | `-q` | | Suppress output, print only file path to stdout |
 
 ## Models
 
@@ -75,6 +79,8 @@ Flags go after the subcommand: `nanobanana generate --flag "prompt"`.
 |-------|----------|-------|
 | `flash` | `gemini-2.5-flash-image` | Fast, affordable (~$0.04/img). Default. |
 | `pro` | `gemini-3-pro-image-preview` | Higher quality, supports 4K (~$0.13/img). |
+
+You can also pass any full Gemini model name directly (e.g., `--model gemini-2.5-flash-image`).
 
 ## Configuration
 
@@ -93,8 +99,9 @@ model = "flash"
 |----------|-------------|
 | `NANOBANANA_GEMINI_API_KEY` | API key (preferred, matches official Gemini extension) |
 | `GEMINI_API_KEY` | API key (fallback) |
+| `NANOBANANA_MODEL` | Default model (overrides config file) |
 
-Priority: env vars > config file > defaults.
+Priority: CLI flags > env vars > config file > defaults.
 
 ## Development
 
