@@ -19,7 +19,9 @@ jobs:
           go-version-file: go.mod
 
       - name: Run tests
-        run: go test -v -race -coverprofile=coverage.out ./...
+        run: |
+          cp README.md cmd/nanobanana/README.md
+          go test -v -race -coverprofile=coverage.out ./...
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
@@ -39,7 +41,9 @@ jobs:
           go-version-file: go.mod
 
       - name: Run go vet
-        run: go vet ./...
+        run: |
+          cp README.md cmd/nanobanana/README.md
+          go vet ./...
 
   build:
     name: Build
@@ -64,6 +68,7 @@ jobs:
 
       - name: Build
         run: |
+          cp README.md cmd/nanobanana/README.md
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o nanobanana ./cmd/nanobanana
           ./nanobanana version || true
 
