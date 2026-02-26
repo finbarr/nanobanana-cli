@@ -8,12 +8,15 @@ LDFLAGS := -ldflags "-X main.Version=$(VERSION)"
 .PHONY: build test lint install uninstall clean
 
 build:
+	cp README.md $(CMD_DIR)/README.md
 	go build $(LDFLAGS) -o $(BINARY) $(CMD_DIR)
 
 test:
+	cp README.md $(CMD_DIR)/README.md
 	go test -v ./...
 
 lint:
+	cp README.md $(CMD_DIR)/README.md
 	go vet ./...
 	@which golangci-lint > /dev/null && golangci-lint run || echo "golangci-lint not installed, skipping"
 
@@ -27,4 +30,4 @@ uninstall:
 	@echo "Removed $(BINDIR)/$(BINARY)"
 
 clean:
-	rm -f $(BINARY)
+	rm -f $(BINARY) $(CMD_DIR)/README.md

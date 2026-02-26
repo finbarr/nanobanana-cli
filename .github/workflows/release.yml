@@ -24,6 +24,7 @@ jobs:
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
           LDFLAGS="-X main.Version=$VERSION"
+          cp README.md cmd/nanobanana/README.md
 
           GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o nanobanana ./cmd/nanobanana
           tar czf nanobanana-linux-amd64.tar.gz nanobanana
@@ -54,6 +55,7 @@ jobs:
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
           LDFLAGS="-X main.Version=$VERSION"
+          cp README.md cmd/nanobanana/README.md
 
           GOOS=darwin GOARCH=amd64 go build -ldflags "$LDFLAGS" -o nanobanana-darwin-amd64 ./cmd/nanobanana
           GOOS=darwin GOARCH=arm64 go build -ldflags "$LDFLAGS" -o nanobanana-darwin-arm64 ./cmd/nanobanana

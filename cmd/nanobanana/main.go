@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -26,6 +27,9 @@ import (
 )
 
 var Version = "dev"
+
+//go:embed README.md
+var readmeContent string
 
 // ANSI color codes
 const (
@@ -595,6 +599,9 @@ func run() int {
 	case "version":
 		printVersion()
 		return 0
+	case "readme":
+		fmt.Print(readmeContent)
+		return 0
 	case "help", "--help", "-h":
 		printUsage()
 		return 0
@@ -1014,6 +1021,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  nanobanana setup                  Configure API key")
 	fmt.Fprintln(os.Stderr, "  nanobanana config                 Show current configuration")
 	fmt.Fprintln(os.Stderr, "  nanobanana version                Show version info")
+	fmt.Fprintln(os.Stderr, "  nanobanana readme                 Print full docs as markdown (for LLMs/agents)")
 	fmt.Fprintln(os.Stderr, "  nanobanana help                   Show this help")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintf(os.Stderr, "%sFLAGS:%s\n", colorBold, colorReset)

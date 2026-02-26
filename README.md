@@ -38,6 +38,7 @@ nanobanana edit photo.jpg "prompt"    # Edit an existing image (use - for stdin)
 nanobanana setup                      # Configure API key
 nanobanana config                     # Show current configuration
 nanobanana version                    # Show version
+nanobanana readme                     # Print full docs as markdown (for LLMs/agents)
 nanobanana help                       # Show help
 ```
 
