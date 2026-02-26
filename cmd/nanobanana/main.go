@@ -1,8 +1,10 @@
 package main
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
@@ -30,6 +32,90 @@ var Version = "dev"
 
 //go:embed README.md
 var readmeContent string
+
+const githubRepo = "finbarr/nanobanana-cli"
+
+// Version check cache
+type versionCache struct {
+	LatestVersion string    `json:"latest_version"`
+	CheckedAt     time.Time `json:"checked_at"`
+}
+
+const versionCheckInterval = 24 * time.Hour
+
+func versionCachePath() string {
+	return filepath.Join(configDir(), "version-check.json")
+}
+
+func checkForUpdates() {
+	// Don't check dev builds
+	if Version == "dev" {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		doVersionCheck()
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+	}
+}
+
+func doVersionCheck() {
+	cachePath := versionCachePath()
+
+	var cache versionCache
+	if data, err := os.ReadFile(cachePath); err == nil {
+		if err := json.Unmarshal(data, &cache); err == nil {
+			if time.Since(cache.CheckedAt) < versionCheckInterval {
+				showUpdateMessage(cache.LatestVersion)
+				return
+			}
+		}
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", githubRepo))
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return
+	}
+
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return
+	}
+
+	latestVersion := strings.TrimPrefix(release.TagName, "v")
+
+	cache = versionCache{
+		LatestVersion: latestVersion,
+		CheckedAt:     time.Now(),
+	}
+	if data, err := json.Marshal(cache); err == nil {
+		os.MkdirAll(filepath.Dir(cachePath), 0755)
+		os.WriteFile(cachePath, data, 0644)
+	}
+
+	showUpdateMessage(latestVersion)
+}
+
+func showUpdateMessage(latestVersion string) {
+	currentVersion := strings.TrimPrefix(Version, "v")
+	if latestVersion != "" && latestVersion != currentVersion && latestVersion > currentVersion {
+		fmt.Fprintf(os.Stderr, "\n%s  Update available: v%s%s (current: %s)\n",
+			colorYellow, latestVersion, colorReset, Version)
+		fmt.Fprintf(os.Stderr, "  Run %snanobanana upgrade%s to update\n\n", colorBold, colorReset)
+	}
+}
 
 // ANSI color codes
 const (
@@ -587,6 +673,12 @@ func run() int {
 		return 0
 	}
 
+	// Check for updates (skip for version/help/upgrade/readme commands)
+	skipCheck := args[0] == "version" || args[0] == "help" || args[0] == "--help" || args[0] == "-h" || args[0] == "upgrade" || args[0] == "readme"
+	if !skipCheck {
+		checkForUpdates()
+	}
+
 	switch args[0] {
 	case "generate", "gen":
 		return runGenerate(args[1:])
@@ -599,6 +691,8 @@ func run() int {
 	case "version":
 		printVersion()
 		return 0
+	case "upgrade":
+		return runUpgrade()
 	case "readme":
 		fmt.Print(readmeContent)
 		return 0
@@ -1008,6 +1102,147 @@ func runConfig() int {
 	return 0
 }
 
+type githubRelease struct {
+	TagName string `json:"tag_name"`
+	Assets  []struct {
+		Name               string `json:"name"`
+		BrowserDownloadURL string `json:"browser_download_url"`
+	} `json:"assets"`
+}
+
+func runUpgrade() int {
+	info("Checking for updates...")
+
+	resp, err := http.Get(fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", githubRepo))
+	if err != nil {
+		errorf("failed to check for updates: %v", err)
+		return 1
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		errorf("failed to check for updates: HTTP %d", resp.StatusCode)
+		return 1
+	}
+
+	var release githubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		errorf("failed to parse release info: %v", err)
+		return 1
+	}
+
+	latestVersion := strings.TrimPrefix(release.TagName, "v")
+	currentVersion := strings.TrimPrefix(Version, "v")
+
+	if latestVersion == currentVersion {
+		success("Already at latest version (%s)", Version)
+		return 0
+	}
+
+	info("New version available: v%s (current: %s)", latestVersion, Version)
+
+	// Find the right tarball for this platform
+	assetName := fmt.Sprintf("nanobanana-%s-%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	var downloadURL string
+	for _, asset := range release.Assets {
+		if asset.Name == assetName {
+			downloadURL = asset.BrowserDownloadURL
+			break
+		}
+	}
+
+	if downloadURL == "" {
+		errorf("no binary available for %s/%s", runtime.GOOS, runtime.GOARCH)
+		return 1
+	}
+
+	info("Downloading %s...", assetName)
+	dlResp, err := http.Get(downloadURL)
+	if err != nil {
+		errorf("failed to download: %v", err)
+		return 1
+	}
+	defer dlResp.Body.Close()
+
+	if dlResp.StatusCode != 200 {
+		errorf("failed to download: HTTP %d", dlResp.StatusCode)
+		return 1
+	}
+
+	// Extract binary from tar.gz
+	binaryData, err := extractBinaryFromTarGz(dlResp.Body, "nanobanana")
+	if err != nil {
+		errorf("failed to extract binary: %v", err)
+		return 1
+	}
+
+	// Get current executable path
+	execPath, err := os.Executable()
+	if err != nil {
+		errorf("failed to get executable path: %v", err)
+		return 1
+	}
+	execPath, err = filepath.EvalSymlinks(execPath)
+	if err != nil {
+		errorf("failed to resolve executable path: %v", err)
+		return 1
+	}
+
+	// Write to temp file first
+	tmpFile, err := os.CreateTemp(filepath.Dir(execPath), "nanobanana-upgrade-*")
+	if err != nil {
+		errorf("failed to create temp file: %v", err)
+		return 1
+	}
+	tmpPath := tmpFile.Name()
+
+	_, err = tmpFile.Write(binaryData)
+	tmpFile.Close()
+	if err != nil {
+		os.Remove(tmpPath)
+		errorf("failed to write binary: %v", err)
+		return 1
+	}
+
+	if err := os.Chmod(tmpPath, 0755); err != nil {
+		os.Remove(tmpPath)
+		errorf("failed to chmod: %v", err)
+		return 1
+	}
+
+	if err := os.Rename(tmpPath, execPath); err != nil {
+		os.Remove(tmpPath)
+		errorf("failed to replace binary: %v", err)
+		return 1
+	}
+
+	success("Upgraded to v%s", latestVersion)
+	return 0
+}
+
+func extractBinaryFromTarGz(r io.Reader, name string) ([]byte, error) {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return nil, fmt.Errorf("decompressing: %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading tar: %w", err)
+		}
+		if hdr.Name == name {
+			return io.ReadAll(tr)
+		}
+	}
+	return nil, fmt.Errorf("%q not found in archive", name)
+}
+
 func printVersion() {
 	fmt.Printf("%snanobanana%s %s%s%s (%s/%s)\n", colorBold, colorReset, colorCyan, Version, colorReset, runtime.GOOS, runtime.GOARCH)
 }
@@ -1021,6 +1256,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  nanobanana setup                  Configure API key")
 	fmt.Fprintln(os.Stderr, "  nanobanana config                 Show current configuration")
 	fmt.Fprintln(os.Stderr, "  nanobanana version                Show version info")
+	fmt.Fprintln(os.Stderr, "  nanobanana upgrade                Upgrade to latest version")
 	fmt.Fprintln(os.Stderr, "  nanobanana readme                 Print full docs as markdown (for LLMs/agents)")
 	fmt.Fprintln(os.Stderr, "  nanobanana help                   Show this help")
 	fmt.Fprintln(os.Stderr, "")
