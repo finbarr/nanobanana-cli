@@ -131,32 +131,58 @@ const (
 
 // Model aliases
 const (
-	modelFlash  = "gemini-2.5-flash-image"
+	modelFlash  = "gemini-3.1-flash-image-preview"
 	modelPro    = "gemini-3-pro-image-preview"
+	modelLegacy = "gemini-2.5-flash-image"
 	apiBaseURL  = "https://generativelanguage.googleapis.com/v1beta/models"
 	httpTimeout = 120 * time.Second
 )
 
 // Model alias map
 var modelAliases = map[string]string{
-	"flash": modelFlash,
-	"pro":   modelPro,
+	"flash":  modelFlash,
+	"pro":    modelPro,
+	"legacy": modelLegacy,
 }
 
-// Valid aspect ratios
+// Valid aspect ratios for Gemini 3.1 Flash Image.
 var validAspectRatios = map[string]bool{
 	"1:1":  true,
-	"16:9": true,
-	"9:16": true,
-	"4:3":  true,
+	"1:4":  true,
+	"1:8":  true,
+	"2:3":  true,
+	"3:2":  true,
 	"3:4":  true,
+	"4:1":  true,
+	"4:3":  true,
+	"4:5":  true,
+	"5:4":  true,
+	"8:1":  true,
+	"9:16": true,
+	"16:9": true,
+	"21:9": true,
 }
 
-// Valid image sizes and their dimensions
+// Pro and legacy models support a narrower aspect ratio set.
+var validAspectRatiosProLegacy = map[string]bool{
+	"1:1":  true,
+	"2:3":  true,
+	"3:2":  true,
+	"3:4":  true,
+	"4:3":  true,
+	"4:5":  true,
+	"5:4":  true,
+	"9:16": true,
+	"16:9": true,
+	"21:9": true,
+}
+
+// Valid image sizes and their dimensions.
 var validSizes = map[string][2]int{
-	"1K": {1024, 1024},
-	"2K": {2048, 2048},
-	"4K": {3840, 2160},
+	"512px": {512, 512},
+	"1K":    {1024, 1024},
+	"2K":    {2048, 2048},
+	"4K":    {3840, 2160},
 }
 
 // quiet suppresses info/spinner output when true
@@ -264,8 +290,14 @@ type apiBlob struct {
 }
 
 type apiGenerationConfig struct {
-	ResponseMIMEType   string   `json:"responseMimeType,omitempty"`
-	ResponseModalities []string `json:"responseModalities,omitempty"`
+	ResponseMIMEType   string          `json:"responseMimeType,omitempty"`
+	ResponseModalities []string        `json:"responseModalities,omitempty"`
+	ImageConfig        *apiImageConfig `json:"imageConfig,omitempty"`
+}
+
+type apiImageConfig struct {
+	AspectRatio string `json:"aspectRatio,omitempty"`
+	ImageSize   string `json:"imageSize,omitempty"`
 }
 
 type apiRequest struct {
@@ -290,44 +322,56 @@ type apiError struct {
 
 // --- API client ---
 
-func buildPrompt(prompt, aspect, size string) string {
-	parts := []string{prompt}
-	if aspect != "1:1" {
-		parts = append(parts, fmt.Sprintf("Aspect ratio: %s", aspect))
+func buildGenerationConfig(model, aspect, size string) (*apiGenerationConfig, error) {
+	imgCfg := &apiImageConfig{
+		AspectRatio: aspect,
 	}
-	dims, ok := validSizes[size]
-	if ok && size != "1K" {
-		parts = append(parts, fmt.Sprintf("Resolution: %dx%d", dims[0], dims[1]))
+
+	if modelSupportsImageSize(model) {
+		if size != "1K" {
+			imgCfg.ImageSize = size
+		}
+	} else if size != "1K" {
+		return nil, fmt.Errorf("model %q supports only --size 1K", model)
 	}
-	return strings.Join(parts, ". ")
+
+	return &apiGenerationConfig{
+		ImageConfig: imgCfg,
+	}, nil
 }
 
 func generateImage(apiKey, model, prompt, aspect, size string) ([]byte, string, error) {
-	fullPrompt := buildPrompt(prompt, aspect, size)
+	genCfg, err := buildGenerationConfig(model, aspect, size)
+	if err != nil {
+		return nil, "", err
+	}
 
 	reqBody := apiRequest{
 		Contents: []apiContent{
 			{
 				Parts: []apiPart{
-					{Text: fullPrompt},
+					{Text: prompt},
 				},
 			},
 		},
-		GenerationConfig: nil,
+		GenerationConfig: genCfg,
 	}
 
 	return doAPICall(apiKey, model, reqBody)
 }
 
 func editImage(apiKey, model, prompt string, imgData []byte, mimeType, aspect, size string) ([]byte, string, error) {
-	fullPrompt := buildPrompt(prompt, aspect, size)
+	genCfg, err := buildGenerationConfig(model, aspect, size)
+	if err != nil {
+		return nil, "", err
+	}
 	b64 := base64.StdEncoding.EncodeToString(imgData)
 
 	reqBody := apiRequest{
 		Contents: []apiContent{
 			{
 				Parts: []apiPart{
-					{Text: fullPrompt},
+					{Text: prompt},
 					{
 						InlineData: &apiBlob{
 							MIMEType: mimeType,
@@ -337,7 +381,7 @@ func editImage(apiKey, model, prompt string, imgData []byte, mimeType, aspect, s
 				},
 			},
 		},
-		GenerationConfig: nil,
+		GenerationConfig: genCfg,
 	}
 
 	return doAPICall(apiKey, model, reqBody)
@@ -616,10 +660,15 @@ func openFile(path string) error {
 
 // --- Validation ---
 
-func validateAspectRatio(ar string) error {
-	if !validAspectRatios[ar] {
-		valid := make([]string, 0, len(validAspectRatios))
-		for k := range validAspectRatios {
+func validateAspectRatio(ar, model string) error {
+	validSet := validAspectRatios
+	if isProModel(model) || isLegacyModel(model) {
+		validSet = validAspectRatiosProLegacy
+	}
+
+	if !validSet[ar] {
+		valid := make([]string, 0, len(validSet))
+		for k := range validSet {
 			valid = append(valid, k)
 		}
 		return fmt.Errorf("invalid aspect ratio %q (valid: %s)", ar, strings.Join(valid, ", "))
@@ -635,8 +684,11 @@ func validateImageSize(size, model string) error {
 		}
 		return fmt.Errorf("invalid size %q (valid: %s)", size, strings.Join(valid, ", "))
 	}
-	if size == "4K" && !isProModel(model) {
-		return fmt.Errorf("4K size requires --model pro")
+	if !modelSupportsImageSize(model) && size != "1K" {
+		return fmt.Errorf("model %q supports only --size 1K", model)
+	}
+	if size == "512px" && !modelSupports512Size(model) {
+		return fmt.Errorf("size 512px is only supported by %s", modelFlash)
 	}
 	return nil
 }
@@ -645,6 +697,18 @@ func validateImageSize(size, model string) error {
 // whether by alias or full model name.
 func isProModel(model string) bool {
 	return model == "pro" || model == modelPro
+}
+
+func isLegacyModel(model string) bool {
+	return model == "legacy" || model == modelLegacy
+}
+
+func modelSupportsImageSize(model string) bool {
+	return !isLegacyModel(model)
+}
+
+func modelSupports512Size(model string) bool {
+	return model == "flash" || model == modelFlash
 }
 
 // resolveModel maps an alias to a full model name, or passes through
@@ -657,7 +721,7 @@ func resolveModel(alias string) (string, error) {
 	if strings.Contains(alias, "-") {
 		return alias, nil
 	}
-	return "", fmt.Errorf("unknown model %q (valid: flash, pro, or a full model name)", alias)
+	return "", fmt.Errorf("unknown model %q (valid: flash, pro, legacy, or a full model name)", alias)
 }
 
 // --- Commands ---
@@ -720,13 +784,13 @@ func runGenerate(args []string) int {
 		countFlag   int
 	)
 
-	fs.StringVar(&modelFlag, "model", "", "model: flash, pro, or full model name")
+	fs.StringVar(&modelFlag, "model", "", "model: flash, pro, legacy, or full model name")
 	fs.StringVar(&modelFlag, "m", "", "model (shorthand)")
 	fs.StringVar(&outputFlag, "output", "", "output file path")
 	fs.StringVar(&outputFlag, "o", "", "output file path (shorthand)")
 	fs.StringVar(&aspectFlag, "aspect", "1:1", "aspect ratio")
 	fs.StringVar(&aspectFlag, "a", "1:1", "aspect ratio (shorthand)")
-	fs.StringVar(&sizeFlag, "size", "1K", "image size: 1K, 2K, 4K")
+	fs.StringVar(&sizeFlag, "size", "1K", "image size: 512px, 1K, 2K, 4K")
 	fs.StringVar(&sizeFlag, "s", "1K", "image size (shorthand)")
 	fs.BoolVar(&quietFlag, "quiet", false, "suppress output, print only file path")
 	fs.BoolVar(&quietFlag, "q", false, "suppress output (shorthand)")
@@ -762,18 +826,18 @@ func runGenerate(args []string) int {
 
 	modelFlag = resolveModelFlag(modelFlag, cfg)
 
-	// Validate
-	if err := validateAspectRatio(aspectFlag); err != nil {
-		errorf("%v", err)
-		return 1
-	}
-	if err := validateImageSize(sizeFlag, modelFlag); err != nil {
+	modelName, err := resolveModel(modelFlag)
+	if err != nil {
 		errorf("%v", err)
 		return 1
 	}
 
-	modelName, err := resolveModel(modelFlag)
-	if err != nil {
+	// Validate
+	if err := validateAspectRatio(aspectFlag, modelName); err != nil {
+		errorf("%v", err)
+		return 1
+	}
+	if err := validateImageSize(sizeFlag, modelName); err != nil {
 		errorf("%v", err)
 		return 1
 	}
@@ -883,13 +947,13 @@ func runEdit(args []string) int {
 		previewFlag bool
 	)
 
-	fs.StringVar(&modelFlag, "model", "", "model: flash, pro, or full model name")
+	fs.StringVar(&modelFlag, "model", "", "model: flash, pro, legacy, or full model name")
 	fs.StringVar(&modelFlag, "m", "", "model (shorthand)")
 	fs.StringVar(&outputFlag, "output", "", "output file path")
 	fs.StringVar(&outputFlag, "o", "", "output file path (shorthand)")
 	fs.StringVar(&aspectFlag, "aspect", "1:1", "aspect ratio")
 	fs.StringVar(&aspectFlag, "a", "1:1", "aspect ratio (shorthand)")
-	fs.StringVar(&sizeFlag, "size", "1K", "image size: 1K, 2K, 4K")
+	fs.StringVar(&sizeFlag, "size", "1K", "image size: 512px, 1K, 2K, 4K")
 	fs.StringVar(&sizeFlag, "s", "1K", "image size (shorthand)")
 	fs.BoolVar(&quietFlag, "quiet", false, "suppress output, print only file path")
 	fs.BoolVar(&quietFlag, "q", false, "suppress output (shorthand)")
@@ -919,18 +983,18 @@ func runEdit(args []string) int {
 
 	modelFlag = resolveModelFlag(modelFlag, cfg)
 
-	// Validate
-	if err := validateAspectRatio(aspectFlag); err != nil {
-		errorf("%v", err)
-		return 1
-	}
-	if err := validateImageSize(sizeFlag, modelFlag); err != nil {
+	modelName, err := resolveModel(modelFlag)
+	if err != nil {
 		errorf("%v", err)
 		return 1
 	}
 
-	modelName, err := resolveModel(modelFlag)
-	if err != nil {
+	// Validate
+	if err := validateAspectRatio(aspectFlag, modelName); err != nil {
+		errorf("%v", err)
+		return 1
+	}
+	if err := validateImageSize(sizeFlag, modelName); err != nil {
 		errorf("%v", err)
 		return 1
 	}
@@ -1047,12 +1111,12 @@ func runSetup() int {
 	}
 
 	// Default model
-	fmt.Fprintf(os.Stderr, "Default model [flash/pro] (current: %s): ", cfg.Model)
+	fmt.Fprintf(os.Stderr, "Default model [flash/pro/legacy] (current: %s): ", cfg.Model)
 	if scanner.Scan() {
 		model := strings.TrimSpace(scanner.Text())
 		if model != "" {
-			if model != "flash" && model != "pro" {
-				errorf("invalid model: %s (must be flash or pro)", model)
+			if _, ok := modelAliases[model]; !ok {
+				errorf("invalid model: %s (must be flash, pro, or legacy)", model)
 				return 1
 			}
 			cfg.Model = model
@@ -1261,19 +1325,21 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  nanobanana help                   Show this help")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintf(os.Stderr, "%sFLAGS:%s\n", colorBold, colorReset)
-	fmt.Fprintln(os.Stderr, "  -m, --model <name>    Model: flash, pro, or a full model name")
+	fmt.Fprintln(os.Stderr, "  -m, --model <name>    Model: flash, pro, legacy, or a full model name")
 	fmt.Fprintln(os.Stderr, "  -o, --output <path>   Output file path (default: auto-generated, - for stdout)")
-	fmt.Fprintln(os.Stderr, "  -a, --aspect <ratio>  Aspect ratio hint: 1:1, 16:9, 9:16, 4:3, 3:4 (default: 1:1)")
-	fmt.Fprintln(os.Stderr, "  -s, --size <size>     Size hint: 1K, 2K, 4K (default: 1K)")
+	fmt.Fprintln(os.Stderr, "  -a, --aspect <ratio>  Aspect ratio: 1:1, 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9")
+	fmt.Fprintln(os.Stderr, "                       + flash-only: 1:4, 1:8, 4:1, 8:1 (default: 1:1)")
+	fmt.Fprintln(os.Stderr, "  -s, --size <size>     Size: 1K, 2K, 4K (+ 512px for flash; legacy only supports 1K)")
 	fmt.Fprintln(os.Stderr, "  -n, --count <N>       Generate N image variations (1-8, generate only)")
 	fmt.Fprintln(os.Stderr, "  -q, --quiet           Suppress output, print only file path to stdout")
 	fmt.Fprintln(os.Stderr, "      --json            Output result as JSON to stdout")
 	fmt.Fprintln(os.Stderr, "  -p, --preview         Open image after saving")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintf(os.Stderr, "%sMODELS:%s\n", colorBold, colorReset)
-	fmt.Fprintln(os.Stderr, "  flash                 gemini-2.5-flash-image (fast, ~$0.04/img)")
-	fmt.Fprintln(os.Stderr, "  pro                   gemini-3-pro-image-preview (quality, ~$0.13/img)")
-	fmt.Fprintln(os.Stderr, "  <full-name>           Any Gemini model name (e.g., gemini-2.5-flash-image)")
+	fmt.Fprintf(os.Stderr, "  flash                 %s (Nano Banana 2, default)\n", modelFlash)
+	fmt.Fprintf(os.Stderr, "  pro                   %s (Nano Banana Pro)\n", modelPro)
+	fmt.Fprintf(os.Stderr, "  legacy                %s\n", modelLegacy)
+	fmt.Fprintf(os.Stderr, "  <full-name>           Any Gemini model name (e.g., %s)\n", modelFlash)
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintf(os.Stderr, "%sCONFIG:%s\n", colorBold, colorReset)
 	fmt.Fprintf(os.Stderr, "  File: %s\n", configPath())
@@ -1283,7 +1349,8 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "%sEXAMPLES:%s\n", colorBold, colorReset)
 	fmt.Fprintln(os.Stderr, "  nanobanana generate \"a cat in space\"")
 	fmt.Fprintln(os.Stderr, "  nanobanana gen \"sunset\" --aspect 16:9 --output sunset.png")
-	fmt.Fprintln(os.Stderr, "  nanobanana generate \"4K wallpaper\" --model pro --size 4K")
+	fmt.Fprintln(os.Stderr, "  nanobanana generate \"4K wallpaper\" --size 4K")
+	fmt.Fprintln(os.Stderr, "  nanobanana generate \"icon\" --size 512px")
 	fmt.Fprintln(os.Stderr, "  nanobanana generate \"logo ideas\" --count 4    # 4 variations")
 	fmt.Fprintln(os.Stderr, "  nanobanana generate \"icon\" --json              # JSON for scripts")
 	fmt.Fprintln(os.Stderr, "  nanobanana edit --preview photo.jpg \"make it cartoon\"")

@@ -24,8 +24,10 @@ func TestResolveModel(t *testing.T) {
 	}{
 		{"flash", modelFlash, false},
 		{"pro", modelPro, false},
-		{"gemini-2.5-flash-image", "gemini-2.5-flash-image", false},
-		{"gemini-3-pro-image-preview", "gemini-3-pro-image-preview", false},
+		{"legacy", modelLegacy, false},
+		{modelFlash, modelFlash, false},
+		{modelPro, modelPro, false},
+		{modelLegacy, modelLegacy, false},
 		{"some-future-model-v2", "some-future-model-v2", false},
 		{"unknown", "", true},
 		{"", "", true},
@@ -67,18 +69,29 @@ func TestIsProModel(t *testing.T) {
 }
 
 func TestValidateAspectRatio(t *testing.T) {
-	valid := []string{"1:1", "16:9", "9:16", "4:3", "3:4"}
-	for _, ar := range valid {
-		if err := validateAspectRatio(ar); err != nil {
-			t.Errorf("validateAspectRatio(%q) unexpected error: %v", ar, err)
-		}
+	tests := []struct {
+		model   string
+		aspect  string
+		wantErr bool
+	}{
+		{modelFlash, "1:4", false},
+		{modelFlash, "8:1", false},
+		{modelFlash, "16:9", false},
+		{modelPro, "1:4", true},
+		{modelPro, "16:9", false},
+		{modelLegacy, "4:1", true},
+		{modelLegacy, "3:2", false},
+		{modelFlash, "foo", true},
+		{modelFlash, "", true},
 	}
 
-	invalid := []string{"2:1", "16:10", "foo", ""}
-	for _, ar := range invalid {
-		if err := validateAspectRatio(ar); err == nil {
-			t.Errorf("validateAspectRatio(%q) expected error", ar)
-		}
+	for _, tt := range tests {
+		t.Run(tt.model+"_"+tt.aspect, func(t *testing.T) {
+			err := validateAspectRatio(tt.aspect, tt.model)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateAspectRatio(%q, %q) error = %v, wantErr %v", tt.aspect, tt.model, err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -90,11 +103,19 @@ func TestValidateImageSize(t *testing.T) {
 	}{
 		{"1K", "flash", false},
 		{"2K", "flash", false},
+		{"4K", "flash", false},
+		{"512px", "flash", false},
 		{"4K", "pro", false},
 		{"4K", modelPro, false}, // full model name should also work
-		{"4K", "flash", true},   // 4K requires pro
-		{"8K", "pro", true},     // invalid size
-		{"", "flash", true},     // empty
+		{"512px", modelFlash, false},
+		{"512px", "pro", true},    // 512px is flash-only
+		{"512px", modelPro, true}, // full pro name
+		{"2K", "legacy", true},    // legacy supports only 1K
+		{"2K", modelLegacy, true}, // full legacy name
+		{"1K", "legacy", false},   // legacy default works
+		{"8K", "pro", true},       // invalid size
+		{"", "flash", true},       // empty
+		{"", modelLegacy, true},   // empty
 	}
 
 	for _, tt := range tests {
@@ -269,10 +290,10 @@ func TestResolveModelFlag(t *testing.T) {
 	}
 
 	// NANOBANANA_MODEL env takes precedence over config
-	t.Setenv("NANOBANANA_MODEL", "gemini-2.5-flash-image")
+	t.Setenv("NANOBANANA_MODEL", modelFlash)
 	got = resolveModelFlag("", cfg)
-	if got != "gemini-2.5-flash-image" {
-		t.Errorf("expected gemini-2.5-flash-image from env, got %q", got)
+	if got != modelFlash {
+		t.Errorf("expected %s from env, got %q", modelFlash, got)
 	}
 
 	// Falls back to config
@@ -367,24 +388,60 @@ func TestWriteImage(t *testing.T) {
 	}
 }
 
-func TestBuildPrompt(t *testing.T) {
+func TestBuildGenerationConfig(t *testing.T) {
 	tests := []struct {
-		prompt string
-		aspect string
-		size   string
-		want   string
+		model   string
+		aspect  string
+		size    string
+		want    apiImageConfig
+		wantErr bool
 	}{
-		{"a cat", "1:1", "1K", "a cat"},
-		{"a cat", "16:9", "1K", "a cat. Aspect ratio: 16:9"},
-		{"a cat", "1:1", "4K", "a cat. Resolution: 3840x2160"},
-		{"a cat", "16:9", "2K", "a cat. Aspect ratio: 16:9. Resolution: 2048x2048"},
+		{
+			model:  modelFlash,
+			aspect: "1:1",
+			size:   "1K",
+			want:   apiImageConfig{AspectRatio: "1:1", ImageSize: ""},
+		},
+		{
+			model:  modelFlash,
+			aspect: "16:9",
+			size:   "2K",
+			want:   apiImageConfig{AspectRatio: "16:9", ImageSize: "2K"},
+		},
+		{
+			model:  modelPro,
+			aspect: "21:9",
+			size:   "4K",
+			want:   apiImageConfig{AspectRatio: "21:9", ImageSize: "4K"},
+		},
+		{
+			model:  modelLegacy,
+			aspect: "1:1",
+			size:   "1K",
+			want:   apiImageConfig{AspectRatio: "1:1", ImageSize: ""},
+		},
+		{
+			model:   modelLegacy,
+			aspect:  "1:1",
+			size:    "2K",
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.prompt+"_"+tt.aspect+"_"+tt.size, func(t *testing.T) {
-			got := buildPrompt(tt.prompt, tt.aspect, tt.size)
-			if got != tt.want {
-				t.Errorf("buildPrompt(%q, %q, %q) = %q, want %q", tt.prompt, tt.aspect, tt.size, got, tt.want)
+		t.Run(tt.model+"_"+tt.aspect+"_"+tt.size, func(t *testing.T) {
+			got, err := buildGenerationConfig(tt.model, tt.aspect, tt.size)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("buildGenerationConfig(%q, %q, %q) error = %v, wantErr %v", tt.model, tt.aspect, tt.size, err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if got == nil || got.ImageConfig == nil {
+				t.Fatalf("buildGenerationConfig(%q, %q, %q) returned nil config", tt.model, tt.aspect, tt.size)
+			}
+			if *got.ImageConfig != tt.want {
+				t.Errorf("buildGenerationConfig(%q, %q, %q) imageConfig = %+v, want %+v", tt.model, tt.aspect, tt.size, *got.ImageConfig, tt.want)
 			}
 		})
 	}
@@ -571,7 +628,7 @@ func TestConfigDir(t *testing.T) {
 
 func TestValidAspectRatios(t *testing.T) {
 	// Ensure all expected ratios exist
-	expected := []string{"1:1", "16:9", "9:16", "4:3", "3:4"}
+	expected := []string{"1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9"}
 	for _, ar := range expected {
 		if !validAspectRatios[ar] {
 			t.Errorf("expected %q in validAspectRatios", ar)
@@ -581,9 +638,10 @@ func TestValidAspectRatios(t *testing.T) {
 
 func TestValidSizes(t *testing.T) {
 	expected := map[string][2]int{
-		"1K": {1024, 1024},
-		"2K": {2048, 2048},
-		"4K": {3840, 2160},
+		"512px": {512, 512},
+		"1K":    {1024, 1024},
+		"2K":    {2048, 2048},
+		"4K":    {3840, 2160},
 	}
 	for k, v := range expected {
 		got, ok := validSizes[k]
@@ -604,12 +662,15 @@ func TestModelAliases(t *testing.T) {
 	if modelAliases["pro"] != modelPro {
 		t.Errorf("expected pro alias to map to %q", modelPro)
 	}
+	if modelAliases["legacy"] != modelLegacy {
+		t.Errorf("expected legacy alias to map to %q", modelLegacy)
+	}
 }
 
 func TestJSONResult(t *testing.T) {
 	r := jsonResult{
 		File:   "test.png",
-		Model:  "gemini-2.5-flash-image",
+		Model:  modelFlash,
 		Prompt: "a cat",
 		Bytes:  1234,
 	}
@@ -624,8 +685,8 @@ func TestJSONResult(t *testing.T) {
 	if got.File != "test.png" {
 		t.Errorf("expected file test.png, got %q", got.File)
 	}
-	if got.Model != "gemini-2.5-flash-image" {
-		t.Errorf("expected model gemini-2.5-flash-image, got %q", got.Model)
+	if got.Model != modelFlash {
+		t.Errorf("expected model %s, got %q", modelFlash, got.Model)
 	}
 	if got.Prompt != "a cat" {
 		t.Errorf("expected prompt 'a cat', got %q", got.Prompt)

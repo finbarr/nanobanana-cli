@@ -63,10 +63,13 @@ nanobanana generate --count 4 "logo ideas for a coffee shop"
 
 # JSON output for scripts and agents
 nanobanana generate --json "a simple icon"
-# → {"file":"nanobanana_20260212_120000.png","model":"gemini-2.5-flash-image","prompt":"a simple icon","bytes":45678}
+# → {"file":"nanobanana_20260212_120000.png","model":"gemini-3.1-flash-image-preview","prompt":"a simple icon","bytes":45678}
 
 # Open image immediately after generating
 nanobanana generate --preview "a blue sky"
+
+# Nano Banana 2 supports 512px output
+nanobanana generate --size 512px "an app icon"
 
 # Edit an existing image
 nanobanana edit photo.jpg "make it look like a watercolor painting"
@@ -81,29 +84,40 @@ nanobanana gen -q "logo" | xargs open
 
 ## Flags
 
-Flags go after the subcommand: `nanobanana generate --flag "prompt"`.
+Flags go after the subcommand and before positional args: `nanobanana generate --flag "prompt"`.
+
+For `edit` and `generate`, this CLI uses Go's standard flag parsing, which stops at the first positional argument.
+
+```bash
+# Correct: flags before positional args
+nanobanana edit --model flash --size 512px input.png "turn this into pixel art"
+
+# Incorrect: flags after positional args (treated as prompt text)
+nanobanana edit input.png --model flash "turn this into pixel art"
+```
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--model` | `-m` | `flash` | Model: `flash`, `pro`, or a full model name |
+| `--model` | `-m` | `flash` | Model: `flash`, `pro`, `legacy`, or a full model name |
 | `--output` | `-o` | auto | Output file path (`-` for stdout) |
-| `--aspect` | `-a` | `1:1` | Aspect ratio hint: `1:1`, `16:9`, `9:16`, `4:3`, `3:4` |
-| `--size` | `-s` | `1K` | Size hint: `1K`, `2K`, `4K` |
+| `--aspect` | `-a` | `1:1` | Aspect ratio: `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, `21:9` (`flash` also supports `1:4`, `1:8`, `4:1`, `8:1`) |
+| `--size` | `-s` | `1K` | Size: `1K`, `2K`, `4K` (`flash` also supports `512px`; `legacy` supports only `1K`) |
 | `--count` | `-n` | `1` | Number of images to generate (1-8, `generate` only) |
 | `--quiet` | `-q` | | Suppress output, print only file path to stdout |
 | `--json` | | | Output result as JSON to stdout |
 | `--preview` | `-p` | | Open image after saving |
 
-**Note on `--aspect` and `--size`:** These are convenience shortcuts that append aspect ratio and resolution hints to your prompt. The Gemini API has no native parameters for image dimensions — the model may not always produce the exact size requested. You can also specify any aspect ratio or size directly in your prompt text (e.g., `"a 4K panoramic sunset in 21:9"`).
+**Note on `--aspect` and `--size`:** These map to Gemini's native `generationConfig.imageConfig` fields (`aspectRatio` and `imageSize`). You can still describe dimensions in prompt text when needed.
 
 ## Models
 
 | Alias | Model ID | Notes |
 |-------|----------|-------|
-| `flash` | `gemini-2.5-flash-image` | Fast, affordable (~$0.04/img). Default. |
-| `pro` | `gemini-3-pro-image-preview` | Higher quality (~$0.13/img). |
+| `flash` | `gemini-3.1-flash-image-preview` | Nano Banana 2. Default. |
+| `pro` | `gemini-3-pro-image-preview` | Nano Banana Pro. |
+| `legacy` | `gemini-2.5-flash-image` | Older flash image model. |
 
-You can also pass any full Gemini model name directly (e.g., `--model gemini-2.5-flash-image`).
+You can also pass any full Gemini model name directly (e.g., `--model gemini-3.1-flash-image-preview`).
 
 ## Configuration
 
